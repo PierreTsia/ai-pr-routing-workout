@@ -1,0 +1,2 @@
+[console_scripts]
+pr-route-workout = pr_route_workout.__main__:main
