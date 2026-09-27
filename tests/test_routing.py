@@ -11,7 +11,8 @@ from pr_route_workout.facts import (
     make_facts,
 )
 from pr_route_workout.domains import domain_for_path, path_domains
-from pr_route_workout.policies import route, Disposition
+from pr_route_workout.policies import Answer, Answers, ai_review, route, Disposition
+from pr_route_workout.questions import SKILLS
 from pr_route_workout.run import evaluate
 from pr_route_workout.fixtures import FIXTURES
 
@@ -134,6 +135,75 @@ class TestPolicies(unittest.TestCase):
         )
         decision = route(facts, None)
         self.assertEqual(decision.disposition, Disposition.READY_FOR_MERGE)
+
+    def test_small_non_frontend_diff_is_babysat_by_preselected_skill(self):
+        facts = make_facts(
+            author_login="ada",
+            checks=CheckStatus.GREEN,
+            draft=False,
+            jira_keys=("545",),
+            files=(".github/workflows/pr-route.yml",),
+        )
+        answers = _answers(
+            skill_nouls={"pr-review": 0.97},
+            review_depth=1.17,
+            blast_radius=0.08,
+            change_shape="feature",
+            change_shape_confidence=0.47,
+        )
+        decision = route(facts, answers)
+        self.assertEqual(decision.disposition, Disposition.AGENT_READY)
+        self.assertEqual(decision.policy_id, "pr_review_job")
+        self.assertNotIn("feature_or_migration", decision.matched_policy_ids)
+        review = ai_review(facts, answers, decision)
+        self.assertTrue(review.trigger)
+        self.assertEqual(tuple(skill.id for skill in review.skills), ("pr-review",))
+        self.assertEqual(
+            review.task,
+            "Pass pr-review on .github/workflows/pr-route.yml.",
+        )
+
+    def test_wide_blast_stays_with_a_human_even_if_a_skill_scores(self):
+        facts = make_facts(
+            author_login="ada",
+            checks=CheckStatus.GREEN,
+            draft=False,
+            jira_keys=("545",),
+            files=(".github/workflows/pr-route.yml",),
+        )
+        answers = _answers(
+            skill_nouls={"pr-review": 0.97},
+            review_depth=1.17,
+            blast_radius=1.79,
+        )
+        decision = route(facts, answers)
+        self.assertEqual(decision.disposition, Disposition.READY_FOR_HITL)
+        self.assertEqual(decision.policy_id, "feature_or_migration")
+
+
+def _answers(
+    *,
+    skill_nouls: dict[str, float],
+    review_depth: float,
+    blast_radius: float,
+    change_shape: str = "feature",
+    change_shape_confidence: float = 0.9,
+) -> Answers:
+    by_id = {
+        skill.question_id: Answer(
+            kind="noul",
+            noul=skill_nouls.get(skill.id, 0.0),
+        )
+        for skill in SKILLS
+    }
+    by_id["change_shape"] = Answer(
+        kind="choice",
+        choice=change_shape,
+        confidence=change_shape_confidence,
+    )
+    by_id["review_depth"] = Answer(kind="score", score=review_depth, confidence=0.8)
+    by_id["blast_radius"] = Answer(kind="score", score=blast_radius, confidence=0.9)
+    return Answers(by_id)
 
 
 if __name__ == "__main__":

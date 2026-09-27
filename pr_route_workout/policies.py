@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
-from pr_route_workout.facts import CheckStatus, Facts, is_frontend_code
+from pr_route_workout.facts import CheckStatus, Facts
 from pr_route_workout.questions import SKILL_NOUL_THRESHOLD, SKILLS, Question, Skill
 from pr_route_workout.reviews import ReviewThread, threads_for_fan_out
 
@@ -248,7 +248,8 @@ _SKILL_BY_ID = {skill.id: skill for skill in SKILLS}
 _JOB_BY_ID = {job.id: job for job in AGENT_JOBS}
 
 
-def _frontend_job(job: AgentJob) -> Policy:
+def _skill_job(job: AgentJob) -> Policy:
+    """Arm a preselected skill on a small diff, frontend or not."""
     skill = _SKILL_BY_ID[job.skill_id]
     return Policy(
         id=job.id,
@@ -256,7 +257,6 @@ def _frontend_job(job: AgentJob) -> Policy:
         task=job.task,
         when=All(
             (
-                FactIs("touches_frontend_code", True),
                 NoulAtLeast(skill.question_id, SKILL_NOUL_THRESHOLD),
                 ScoreBelow("review_depth", 1.5),
                 ScoreBelow("blast_radius", 1.5),
@@ -294,16 +294,14 @@ POLICIES: tuple[Policy, ...] = (
             )
         ),
     ),
-    *(_frontend_job(job) for job in AGENT_JOBS),
+    *(_skill_job(job) for job in AGENT_JOBS),
     Policy(
         id="feature_or_migration",
         disposition=Disposition.READY_FOR_HITL,
         when=Any(
             (
-                ChoiceIn("change_shape", frozenset({"feature", "migration"})),
                 ScoreAtLeast("review_depth", 1.5),
                 ScoreAtLeast("blast_radius", 1.5),
-                ConfidenceBelow("change_shape", 0.6),
             )
         ),
     ),
@@ -352,13 +350,12 @@ def _skill_score(skill: Skill, answers: Answers | None) -> SkillScore:
     return SkillScore(skill.id, answers.get(skill.question_id).noul)
 
 
-def _frontend_files(facts: Facts) -> str:
-    files = [path for path in facts.files if is_frontend_code(path)]
-    return ", ".join(files) if files else "the changed frontend files"
+def _changed_files(facts: Facts) -> str:
+    return ", ".join(facts.files) if facts.files else "the changed files"
 
 
 def _filled_task(policy: Policy, facts: Facts) -> str:
-    return (policy.task or "").replace("{files}", _frontend_files(facts))
+    return (policy.task or "").replace("{files}", _changed_files(facts))
 
 
 def _idle_basis(facts: Facts) -> str:
@@ -366,9 +363,7 @@ def _idle_basis(facts: Facts) -> str:
         return "UI package path, but the diff is only a dependency manifest"
     if facts.dependency_manifest_only:
         return "dependency manifest only"
-    if not facts.touches_frontend_code:
-        return "not frontend code"
-    return "no closed frontend job matched"
+    return "no skill job matched"
 
 
 def ai_review(facts: Facts, answers: Answers | None, decision: Decision) -> AiReview:
